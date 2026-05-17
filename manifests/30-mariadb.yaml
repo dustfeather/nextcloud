@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nextcloud-db
+  namespace: nextcloud
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextcloud-mariadb
+  namespace: nextcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: nextcloud-mariadb }
+  template:
+    metadata:
+      labels: { app: nextcloud-mariadb }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: asus-laptop
+      containers:
+        - name: mariadb
+          image: mariadb:11.4
+          args:
+            - --transaction-isolation=READ-COMMITTED
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_general_ci
+            - --innodb-file-per-table=1
+            - --max-allowed-packet=256M
+            - --skip-log-bin
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: nextcloud-db, key: mariadb-root-password } }
+            - name: MARIADB_DATABASE
+              value: nextcloud
+            - name: MARIADB_USER
+              valueFrom: { secretKeyRef: { name: nextcloud-db, key: db-username } }
+            - name: MARIADB_PASSWORD
+              valueFrom: { secretKeyRef: { name: nextcloud-db, key: db-password } }
+          ports:
+            - { name: mysql, containerPort: 3306 }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect"]
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: nextcloud-db }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-mariadb
+  namespace: nextcloud
+spec:
+  selector: { app: nextcloud-mariadb }
+  ports:
+    - { name: mysql, port: 3306, targetPort: 3306 }
