@@ -1185,12 +1185,44 @@ Replace the `## Status` body with: `Deployed. Plan executed: docs/superpowers/pl
   - `manifests/README.md`: state it now holds `00-namespace`, `10-clusterissuer-letsencrypt`, `20-certificate`, `30-mariadb`, `40-valkey`, `50-nextcloud-pvcs`, `60-nginx-tls-proxy`, `70-backup-cronjob` (applied; apply order in root README).
   - `secrets/README.md`: keep the policy text; update the closing line to note the `*.example` templates now exist and the real `*.yaml` are applied out-of-band & gitignored.
 
+- [ ] **Step 4d: De-stale `CLAUDE.md` + root `README.md` Layout/Secrets (Task 12 code-review carry-forward — these operator docs still describe pre-deploy state)**
+
+In `CLAUDE.md`, replace the `**Current state: design-only.** … the "Apply order" in the root `README.md`.` paragraph with:
+```
+**Current state: deployed.** The implementation plan
+(`docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md`) has been written
+and executed; `helm/`, `manifests/`, and `secrets/*.example` are populated and the
+stack is live on the cluster (`https://nextcloud.itguys.ro`, Mesh-only, :443 via the
+proxy hostPort). The root `README.md` "Apply order" and "Operational dependencies"
+sections are the operator entry point; re-applying is manual (`helm upgrade` /
+`kubectl apply`) per the versioned-imperative model below.
+```
+
+In `README.md` Layout block, replace the `helm/` and `manifests/` lines with:
+```
+helm/        Helm values (committed, secret-free): cert-manager + nextcloud
+manifests/   raw k8s YAML: namespace, cert-manager issuer + certificate,
+             MariaDB, Valkey, PVCs, nginx TLS proxy (hostPort :443), backup CronJob
+```
+
+In `README.md` "Secrets this deployment needs" list, replace the two bullets with:
+```
+- Cloudflare API token for cert-manager DNS-01 (`Zone:DNS:Edit` +
+  `Zone:Zone:Read` on `itguys.ro`) — `secrets/cf-api-token`.
+- Nextcloud admin password — `secrets/nextcloud-admin`.
+- MariaDB root + nextcloud DB passwords — `secrets/nextcloud-db`.
+- Valkey password — `secrets/valkey-auth`.
+- Dedicated backup SSH private key (rsync to acer) — `secrets/backup-ssh`.
+```
+
 - [ ] **Step 5: Commit**
 
 ```bash
 git add README.md helm/README.md manifests/README.md secrets/README.md
 git commit -m "docs(nextcloud): finalize README — apply order (:443), status, operational deps, sub-READMEs"
 ```
+(If Step 4d is done as a follow-up after Step 5's commit, use a second commit:
+`git add CLAUDE.md README.md && git commit -m "docs(nextcloud): de-stale CLAUDE.md + README Layout/Secrets to deployed state"`.)
 
 ---
 
