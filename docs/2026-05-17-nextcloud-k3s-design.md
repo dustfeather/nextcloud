@@ -50,7 +50,10 @@ Namespace `nextcloud`; all pods `nodeSelector: kubernetes.io/hostname=asus-lapto
 - DNS: `nextcloud.itguys.ro` → A `100.96.0.2`, **DNS-only / grey-cloud**
   (same pattern as `k3s.itguys.ro`). Resolves+reachable **only for Cloudflare
   WARP Mesh participants**.
-- Service: NodePort on `100.96.0.2` (proposed `:30444`), HTTPS.
+- Exposure: the asus-pinned nginx TLS proxy binds the asus host's **`:443`
+  via `hostPort`** (single replica), so access is `https://nextcloud.itguys.ro`
+  with no port. (Superseded the initial NodePort `:30444` proposal — see the
+  2026-05-18 amendment in §5.)
 - Nextcloud config: `trusted_domains` includes `nextcloud.itguys.ro`;
   `overwrite.cli.url=https://nextcloud.itguys.ro`; `overwriteprotocol=https`.
 - **Companion manual step (user/device side, not cluster):** install
@@ -63,7 +66,7 @@ Namespace `nextcloud`; all pods `nodeSelector: kubernetes.io/hostname=asus-lapto
 
 ### Data flow
 Mesh client (laptop / WARP-enrolled phone) → `https://nextcloud.itguys.ro`
-(A→100.96.0.2, WARP-encrypted transport) → NodePort `:30444` on asus →
+(A→100.96.0.2, WARP-encrypted transport) → asus host `:443` (proxy `hostPort`) →
 nginx (TLS termination, cert-manager cert) → Nextcloud → MariaDB + Valkey
 (in-cluster, same node) ; files on local-path PVC on asus.
 
@@ -106,6 +109,22 @@ the recovery path; there is intentionally no live storage replication.
 > the Cloudflare dashboard API token (#2), the DNS record (#3), and the Android
 > WARP enrolment (#4). The single-node pin (§2/§3) and versioned-imperative
 > apply model (footer) are deliberate choices, unaffected by host access.
+
+> **Amendment 2026-05-18 (default :443 instead of NodePort :30444):** On user
+> request, the nginx TLS front-proxy now binds the **asus host `:443` directly
+> via `hostPort`** (the pod is single-replica and asus-pinned; nginx master
+> runs as root so it may bind the privileged port; k3s NodePorts cannot use
+> 443 as they are restricted to 30000–32767). The proxy `Service` is therefore
+> `ClusterIP` (in-cluster only); external reach is the hostPort on
+> `100.96.0.2:443`. Access URL is now `https://nextcloud.itguys.ro` (no port);
+> `overwritehost`/`overwrite.cli.url` are portless accordingly. Proxy
+> Deployment strategy is `Recreate` (only one pod may own host :443 at a time).
+> This keeps a single shared :443 TLS entrypoint: **future apps** are added as
+> additional nginx `server {}` SNI blocks + their own cert-manager
+> `Certificate` (it can later graduate to a real ingress controller without
+> re-deciding this). No k3s reconfiguration or control-plane restart was
+> needed. Mesh-only, no public exposure, and all §7 acceptance criteria are
+> unchanged (they never specified a port).
 
 ## 6. Risks / accepted trade-offs
 

@@ -44,11 +44,13 @@ Validate before proposing an apply (no cluster CI exists):
   `nodeSelector: kubernetes.io/hostname=asus-laptop` on every pod. Storage is
   `local-path` (node-local RWO) on asus only. Nothing may schedule to `acer-laptop`
   or `wsl`. No storage HA is by design (accepted trade-off).
-- **Mesh-only, no public exposure.** Access is via NodePort on the asus Cloudflare
-  WARP Mesh IP `100.96.0.2` (proposed `:30444`, HTTPS), with DNS
-  `nextcloud.itguys.ro` → A `100.96.0.2` **DNS-only / grey-cloud**. The cluster's
-  cloudflared tunnel is deliberately **not** used here. There is no ingress
-  controller (traefik disabled).
+- **Mesh-only, no public exposure.** The asus-pinned nginx TLS proxy binds the
+  asus host `:443` via `hostPort` (single replica; its Service is ClusterIP),
+  so access is `https://nextcloud.itguys.ro` (default port, no NodePort), with
+  DNS `nextcloud.itguys.ro` → A `100.96.0.2` **DNS-only / grey-cloud**. The
+  cluster's cloudflared tunnel is deliberately **not** used here. There is no
+  ingress controller (traefik disabled); this proxy is the single shared :443
+  TLS entrypoint (future apps = added nginx SNI server blocks + their own cert).
 - **Components:** official `nextcloud/nextcloud` Helm chart (nginx sidecar terminates
   TLS) + dedicated **MariaDB** (Postgres explicitly rejected) + dedicated **Valkey**
   for `memcache.locking`/`memcache.distributed` (a fresh instance — do not reuse

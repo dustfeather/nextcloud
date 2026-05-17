@@ -4,7 +4,7 @@
 
 **Goal:** Deploy a Mesh-only, TLS-secured, single-node-pinned Nextcloud (files + groupware) on the existing 3-node k3s-over-Cloudflare-WARP-Mesh cluster, with nightly backups.
 
-**Architecture:** All workloads live in namespace `nextcloud`, pinned to `asus-laptop` via `nodeSelector` (local-path storage is node-local). Standalone MariaDB + standalone Valkey back the official Nextcloud Helm chart (Apache image, plain HTTP internally). A dedicated nginx **front reverse-proxy** Deployment terminates TLS with a cert-manager (Cloudflare DNS-01) Let's Encrypt certificate and is exposed as a NodePort on the asus Mesh IP. A nightly CronJob dumps the DB + config and rsyncs data off-node to `acer-laptop`.
+**Architecture:** All workloads live in namespace `nextcloud`, pinned to `asus-laptop` via `nodeSelector` (local-path storage is node-local). Standalone MariaDB + standalone Valkey back the official Nextcloud Helm chart (Apache image, plain HTTP internally). A dedicated nginx **front reverse-proxy** Deployment terminates TLS with a cert-manager (Cloudflare DNS-01) Let's Encrypt certificate and binds the asus host's `:443` directly via `hostPort` (so the URL is `https://nextcloud.itguys.ro`, no port). A nightly CronJob dumps the DB + config and rsyncs data off-node to `acer-laptop`.
 
 **Tech Stack:** k3s v1.35.4, Helm v4, `nextcloud/nextcloud` chart `9.1.0` (app 33.0.3), `jetstack/cert-manager` `v1.20.2`, official `mariadb:11.4`, `valkey/valkey:8-alpine`, `nginx:1.27-alpine`, local-path PVCs.
 
@@ -18,7 +18,7 @@ This is infrastructure, not application code — there is no unit-test harness. 
 
 The approved design (`docs/2026-05-17-nextcloud-k3s-design.md`) is followed except for two deliberate, documented refinements — both still satisfy every §7 acceptance criterion:
 
-1. **TLS termination: dedicated front nginx reverse-proxy Deployment, not a chart "nginx sidecar."** The Nextcloud chart's nginx sidecar cannot mount the cert-manager TLS secret without overriding chart templates with brittle, version-fragile config (would force placeholders). A separate, fully-owned nginx Deployment in front of the chart's plain-HTTP ClusterIP Service mounts `nextcloud-tls` directly, terminates TLS, and is the NodePort. Net effect on §7 is identical: valid LE cert, HTTPS only, no ingress controller, NodePort on the asus Mesh IP, all pods on asus.
+1. **TLS termination: dedicated front nginx reverse-proxy Deployment, not a chart "nginx sidecar."** The Nextcloud chart's nginx sidecar cannot mount the cert-manager TLS secret without overriding chart templates with brittle, version-fragile config (would force placeholders). A separate, fully-owned nginx Deployment in front of the chart's plain-HTTP ClusterIP Service mounts `nextcloud-tls` directly, terminates TLS, and binds the asus host's `:443` via `hostPort` (single replica, asus-pinned). Net effect on §7 is identical: valid LE cert, HTTPS only on the default port, no ingress controller, reachable only on the asus Mesh IP, all pods on asus. (Originally implemented as a NodePort `:30444`; cut over to `hostPort 443` on user request — see the 2026-05-18 amendment.)
 2. **DB consistency: `mariadb-dump --single-transaction`, not an `occ maintenance:mode` toggle.** A single-transaction dump of InnoDB tables is a consistent snapshot and removes the need to exec `occ` / flip maintenance mode from the CronJob (fewer moving parts, no Nextcloud-container coupling). config.php is captured from the shared data PVC. §7's "restorable DB dump + data copy" is met.
 
 ## Prerequisites — human, out-of-band (must be done before Task 3 / Task 10)
@@ -651,9 +651,9 @@ nextcloud:
     - name: OVERWRITEPROTOCOL
       value: "https"
     - name: OVERWRITEHOST
-      value: "nextcloud.itguys.ro:30444"     # MUST include the NodePort — no :443 listener exists
+      value: "nextcloud.itguys.ro"            # served on default :443 via proxy hostPort (Task 9)
     - name: OVERWRITECLIURL
-      value: "https://nextcloud.itguys.ro:30444"
+      value: "https://nextcloud.itguys.ro"
     - name: PHP_MEMORY_LIMIT
       value: "1024M"
     - name: PHP_UPLOAD_LIMIT
@@ -756,12 +756,12 @@ git commit -m "feat(nextcloud): Nextcloud chart 9.1.0 (external MariaDB+Valkey, 
 
 ---
 
-## Task 9: nginx TLS front-proxy + NodePort
+## Task 9: nginx TLS front-proxy (hostPort :443)
 
 **Files:**
 - Create: `manifests/60-nginx-tls-proxy.yaml`
 
-- [ ] **Step 1: Verify the proxy + NodePort are absent (the failing test)**
+- [ ] **Step 1: Verify the proxy + Service are absent (the failing test)**
 
 Run: `kubectl -n nextcloud get deploy nginx-tls-proxy svc nextcloud-https`
 Expected: `NotFound` for both.
@@ -795,9 +795,9 @@ data:
         proxy_request_buffering off;
 
         # CalDAV/CardDAV well-known redirects (Nextcloud security scan).
-        # Use $http_host (client Host incl. the :30444 NodePort) — a relative
-        # 301 would drop the port (nginx listens on :443) and break DAVx5/
-        # Apple/Thunderbird autodiscovery against the non-standard external port.
+        # Use $http_host (the client's Host verbatim) so the redirect targets
+        # whatever host[:port] the client used — robust if a non-default port
+        # is ever introduced; correct for DAVx5/Apple/Thunderbird autodiscovery.
         location = /.well-known/carddav { return 301 https://$http_host/remote.php/dav; }
         location = /.well-known/caldav  { return 301 https://$http_host/remote.php/dav; }
 
@@ -821,6 +821,8 @@ metadata:
   namespace: nextcloud
 spec:
   replicas: 1
+  strategy:
+    type: Recreate          # single owner of host :443 — old pod must free it before new binds
   selector:
     matchLabels: { app: nginx-tls-proxy }
   template:
@@ -852,7 +854,10 @@ spec:
                 done ) &
               exec nginx -g 'daemon off;'
           ports:
-            - { name: https, containerPort: 443 }
+            # hostPort 443: pod (pinned to asus, replicas:1) binds the asus
+            # host's :443 directly, so the URL is https://nextcloud.itguys.ro
+            # (no NodePort). nginx master runs as root → may bind privileged 443.
+            - { name: https, containerPort: 443, hostPort: 443 }
           resources:
             requests: { cpu: 25m, memory: 32Mi }
           readinessProbe:
@@ -874,13 +879,12 @@ metadata:
   name: nextcloud-https
   namespace: nextcloud
 spec:
-  type: NodePort
+  type: ClusterIP          # external access is via the pod's hostPort 443 on asus; this Service is in-cluster only
   selector: { app: nginx-tls-proxy }
   ports:
     - name: https
       port: 443
       targetPort: 443
-      nodePort: 30444
 ```
 
 - [ ] **Step 3: Apply and verify rollout (the passing test)**
@@ -888,7 +892,7 @@ spec:
 Run: `kubectl apply -f manifests/60-nginx-tls-proxy.yaml && kubectl -n nextcloud rollout status deploy/nginx-tls-proxy --timeout=120s`
 Expected: `successfully rolled out`. If nginx crash-loops with an SSL cert error, Task 4's `nextcloud-tls` secret is missing or not yet populated — re-check `kubectl -n nextcloud get secret nextcloud-tls`.
 
-- [ ] **Step 4: Verify TLS + Nextcloud reachable in-cluster on the NodePort**
+- [ ] **Step 4: Verify TLS + Nextcloud reachable in-cluster via the proxy Service**
 
 ```bash
 kubectl -n nextcloud exec deploy/nextcloud -c nextcloud -- \
@@ -900,7 +904,7 @@ Expected: JSON containing `"installed":true` and `"productname":"Nextcloud"`.
 
 ```bash
 git add manifests/60-nginx-tls-proxy.yaml
-git commit -m "feat(nextcloud): nginx TLS front-proxy + NodePort :30444"
+git commit -m "feat(nextcloud): nginx TLS front-proxy (hostPort :443)"
 ```
 
 ---
@@ -918,22 +922,22 @@ Expected: `100.96.0.2`. (If empty, P2 is not done or not propagated.)
 
 Run (from this WSL session, a Mesh participant):
 ```bash
-curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://nextcloud.itguys.ro:30444/status.php
-echo | openssl s_client -connect 100.96.0.2:30444 -servername nextcloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer -dates
+curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://nextcloud.itguys.ro/status.php
+echo | openssl s_client -connect 100.96.0.2:443 -servername nextcloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer -dates
 ```
 Expected: `200 0` (HTTP 200, TLS verify OK = 0); issuer contains `Let's Encrypt`, valid date range. **No `-k` needed** — this is the §7 "valid cert, no warnings" check.
 
 - [ ] **Step 3: Verify web login works**
 
-In a browser on a Mesh machine open `https://nextcloud.itguys.ro:30444`, log in with the admin credentials from `secrets/nextcloud-admin.yaml`. Expected: dashboard loads, no certificate warning, no "untrusted domain" error.
+In a browser on a Mesh machine open `https://nextcloud.itguys.ro`, log in with the admin credentials from `secrets/nextcloud-admin.yaml`. Expected: dashboard loads, no certificate warning, no "untrusted domain" error.
 
 - [ ] **Step 4: Verify the Android app (design §7)**
 
-On the WARP-enrolled phone (P3), install the Nextcloud Android app, server URL `https://nextcloud.itguys.ro:30444`, log in. Expected: files sync; add the account in DAVx⁵/built-in to confirm CalDAV/CardDAV.
+On the WARP-enrolled phone (P3), install the Nextcloud Android app, server URL `https://nextcloud.itguys.ro`, log in. Expected: files sync; add the account in DAVx⁵/built-in to confirm CalDAV/CardDAV.
 
 - [ ] **Step 5: Commit (documentation only — capture the verified access URL)**
 
-No artifact change in this task; if any notes were added to README, commit them, otherwise skip. Record the verified URL `https://nextcloud.itguys.ro:30444` in Task 12's README update.
+No artifact change in this task; if any notes were added to README, commit them, otherwise skip. Record the verified URL `https://nextcloud.itguys.ro` in Task 12's README update.
 
 ---
 
@@ -1124,17 +1128,17 @@ Human prereqs P1–P4 are in that plan's "Prerequisites" section.
 6. `kubectl apply -f secrets/valkey-auth.yaml` (oob) → `kubectl apply -f manifests/40-valkey.yaml`
 7. `kubectl apply -f manifests/50-nextcloud-pvcs.yaml`
 8. `kubectl apply -f secrets/nextcloud-admin.yaml` (oob) → `helm install nextcloud nextcloud/nextcloud -n nextcloud --version 9.1.0 -f helm/nextcloud-values.yaml`
-9. `kubectl apply -f manifests/60-nginx-tls-proxy.yaml`
+9. `kubectl apply -f manifests/60-nginx-tls-proxy.yaml` (proxy binds asus host :443 via hostPort)
 10. Create DNS `nextcloud.itguys.ro` A → 100.96.0.2 (DNS-only); verify end-to-end.
 11. `kubectl apply -f secrets/backup-ssh.yaml` (oob) → `kubectl apply -f manifests/70-backup-cronjob.yaml`
 
-Access: `https://nextcloud.itguys.ro:30444` (Mesh participants only).
+Access: `https://nextcloud.itguys.ro` (default :443, Mesh participants only).
 Upgrades: `helm upgrade nextcloud nextcloud/nextcloud -n nextcloud --version <v> -f helm/nextcloud-values.yaml`.
 ```
 
 - [ ] **Step 4: Update the "Status" section in `README.md`**
 
-Replace the `## Status` body with: `Deployed. Plan executed: docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md. Access https://nextcloud.itguys.ro:30444 (Mesh only).`
+Replace the `## Status` body with: `Deployed. Plan executed: docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md. Access https://nextcloud.itguys.ro (Mesh only).`
 
 - [ ] **Step 5: Commit**
 
@@ -1147,6 +1151,6 @@ git commit -m "docs(nextcloud): record apply order + deployed status"
 
 ## Self-review (completed during planning)
 
-- **Spec coverage:** §3 components → Tasks 5,6,8,9 + cert-manager 2–4; §3 storage → Tasks 5,7; §3 access (NodePort/DNS/overwrite) → Tasks 8,9,10; §3 TLS auto-renew → Task 4 (`renewBefore: 720h`, verified §7); §4 backups → Task 11 (acer host prep automated in 11.1 per the 2026-05-17 remote-sudo amendment); §5 prereqs → P1–P3 human + former P4 automated; §7 acceptance → Tasks 4,8,10,11,12; §8 deferred (Collabora/Photos) → intentionally omitted. No gaps.
+- **Spec coverage:** §3 components → Tasks 5,6,8,9 + cert-manager 2–4; §3 storage → Tasks 5,7; §3 access (hostPort 443/DNS/overwrite) → Tasks 8,9,10; §3 TLS auto-renew → Task 4 (`renewBefore: 720h`, verified §7); §4 backups → Task 11 (acer host prep automated in 11.1 per the 2026-05-17 remote-sudo amendment); §5 prereqs → P1–P3 human + former P4 automated; §7 acceptance → Tasks 4,8,10,11,12; §8 deferred (Collabora/Photos) → intentionally omitted. No gaps.
 - **Placeholder scan:** every YAML/command is concrete; the only `REPLACE_ME` tokens are inside `secrets/*.example` templates by design (real values are out-of-band, gitignored).
 - **Type/name consistency:** secret names (`cloudflare-api-token`, `nextcloud-admin`, `nextcloud-db`, `valkey-auth`, `backup-ssh`, `nextcloud-tls`), Service DNS (`nextcloud-mariadb:3306`, `valkey:6379`, `nextcloud:8080`, `nextcloud-https`), PVCs (`nextcloud-data`, `nextcloud-db`, `nextcloud-backups`) and the `kubernetes.io/hostname: asus-laptop` selector are consistent across all tasks.
