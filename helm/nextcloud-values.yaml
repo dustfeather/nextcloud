@@ -1,0 +1,86 @@
+# Apache image (plain HTTP on :80, Service :8080). TLS is terminated by the
+# separate nginx front-proxy (Task 9). Chart nginx sidecar intentionally OFF.
+nginx:
+  enabled: false
+
+nextcloud:
+  host: nextcloud.itguys.ro
+  existingSecret:
+    enabled: true
+    secretName: nextcloud-admin
+    usernameKey: nextcloud-username
+    passwordKey: nextcloud-password
+  trustedDomains:
+    - nextcloud.itguys.ro
+  extraEnv:
+    - name: TRUSTED_PROXIES
+      value: "10.42.0.0/16"          # in-cluster pod CIDR (front-proxy source)
+    - name: OVERWRITEPROTOCOL
+      value: "https"
+    - name: OVERWRITEHOST
+      value: "nextcloud.itguys.ro:30444"
+    - name: OVERWRITECLIURL
+      value: "https://nextcloud.itguys.ro:30444"
+    - name: PHP_MEMORY_LIMIT
+      value: "1024M"
+    - name: PHP_UPLOAD_LIMIT
+      value: "10G"
+
+internalDatabase:
+  enabled: false
+
+externalDatabase:
+  enabled: true
+  type: mysql
+  host: nextcloud-mariadb:3306
+  database: nextcloud
+  existingSecret:
+    enabled: true
+    secretName: nextcloud-db
+    usernameKey: db-username
+    passwordKey: db-password
+
+# Bundled bitnami subcharts OFF (we run standalone MariaDB + Valkey).
+mariadb:
+  enabled: false
+postgresql:
+  enabled: false
+redis:
+  enabled: false
+
+externalRedis:
+  enabled: true
+  host: valkey
+  port: "6379"
+  existingSecret:
+    enabled: true
+    secretName: valkey-auth
+    passwordKey: redis-password
+
+persistence:
+  enabled: true
+  existingClaim: nextcloud-data
+  accessMode: ReadWriteOnce
+
+# Nextcloud background jobs (separate from the Task-11 backup CronJob).
+cronjob:
+  enabled: true
+  type: sidecar
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# Pin the whole stack to asus (design §3 invariant).
+nodeSelector:
+  kubernetes.io/hostname: asus-laptop
+
+startupProbe:
+  enabled: true
+
+# No memory limit: PHP_MEMORY_LIMIT=1024M per worker; burst is acceptable on
+# asus (single/small-team use). Add limits.memory if the node shows OOM pressure.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
