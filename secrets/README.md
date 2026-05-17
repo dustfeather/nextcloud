@@ -10,5 +10,6 @@ Pattern:
 2. fill real values in `secrets/<name>.yaml` (gitignored)
 3. `kubectl apply -f secrets/<name>.yaml`
 
-`*.example` files are created by the implementation plan (cf-api-token,
-nextcloud admin, mariadb creds). None exist yet — design only.
+`*.example` template files are committed (cf-api-token, nextcloud-admin,
+nextcloud-db, valkey-auth, backup-ssh). The real `*.yaml` files are applied
+out-of-band and gitignored — they are never committed.

@@ -36,13 +36,46 @@ Secrets this deployment needs (all out-of-band, never in git):
 
 (If this grows, consider SOPS+age or Sealed Secrets — out of scope for now.)
 
-## Apply order (filled in by the implementation plan)
+## Apply order
 
-TBD by the writing-plans step. High level: cert-manager → ClusterIssuer +
-Certificate → namespace + secrets → MariaDB + Valkey → Nextcloud (Helm) →
-NodePort + DNS → backup CronJob.
+Plan: `docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md`.
+Human prereqs P1–P4 are in that plan's "Prerequisites" section.
+
+1. `kubectl apply -f manifests/00-namespace.yaml`
+2. `helm install cert-manager jetstack/cert-manager -n cert-manager --create-namespace --version v1.20.2 -f helm/cert-manager-values.yaml`
+3. `kubectl apply -f secrets/cf-api-token.yaml` (out-of-band) → `kubectl apply -f manifests/10-clusterissuer-letsencrypt.yaml`
+4. `kubectl apply -f manifests/20-certificate.yaml`
+5. `kubectl apply -f secrets/nextcloud-db.yaml` (oob) → `kubectl apply -f manifests/30-mariadb.yaml`
+6. `kubectl apply -f secrets/valkey-auth.yaml` (oob) → `kubectl apply -f manifests/40-valkey.yaml`
+7. `kubectl apply -f manifests/50-nextcloud-pvcs.yaml`
+8. `kubectl apply -f secrets/nextcloud-admin.yaml` (oob) → `helm install nextcloud nextcloud/nextcloud -n nextcloud --version 9.1.0 -f helm/nextcloud-values.yaml`
+9. `kubectl apply -f manifests/60-nginx-tls-proxy.yaml` (proxy binds asus host :443 via hostPort)
+10. Create DNS `nextcloud.itguys.ro` A → 100.96.0.2 (DNS-only); verify end-to-end.
+11. `kubectl apply -f secrets/backup-ssh.yaml` (oob) → `kubectl apply -f manifests/70-backup-cronjob.yaml`
+
+Access: `https://nextcloud.itguys.ro` (default :443, Mesh participants only).
+Upgrades: `helm upgrade nextcloud nextcloud/nextcloud -n nextcloud --version <v> -f helm/nextcloud-values.yaml`.
 
 ## Status
 
-Design approved (brainstorming); see `docs/2026-05-17-nextcloud-k3s-design.md`.
-Implementation plan not yet written. **No cluster changes made yet.**
+Deployed. Plan executed: docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md. Access https://nextcloud.itguys.ro (Mesh only).
+
+## Operational dependencies (silent-failure if removed — read before touching Cloudflare/PVs)
+
+- **Cloudflare Gateway "Do Not Inspect" rule** — the `itguys` org has Gateway
+  `tls_decrypt` enabled, which TLS-MITMs `:443`. Rule id
+  `df440536-0b50-483d-b5d7-70cd7cbe6230` (`action: off`,
+  `http.conn.hostname == "nextcloud.itguys.ro"`) exempts this host so the real
+  Let's Encrypt cert is served end-to-end. **If this rule is deleted/disabled
+  the failure is silent**: clients get the Cloudflare Gateway CA, the Nextcloud
+  Android app breaks, and file traffic is decrypted at Cloudflare's edge.
+  Verify: `echo | openssl s_client -connect 100.96.0.2:443 -servername
+  nextcloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer` must show
+  `O = Let's Encrypt` (NOT `Gateway CA`). Any future app added on :443 needs
+  its hostname added to a Do-Not-Inspect rule. Full context: design doc
+  §5 amendment 2026-05-18 + `~/cloudflare-mesh-k3s-state.md`.
+- **PV reclaim policy = Retain** — the bound PVs for `nextcloud-data` and
+  `nextcloud-backups` were patched to `persistentVolumeReclaimPolicy: Retain`
+  (local-path defaults to `Delete`), so an accidental `kubectl delete pvc`
+  does not wipe the hostPath. Disk-loss recovery is still the nightly
+  acer-laptop rsync (design §4); these PVs are single-disk on asus.
