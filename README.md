@@ -77,8 +77,9 @@ Deployed. Plan executed: docs/superpowers/plans/2026-05-17-nextcloud-k3s-deploym
   `O = Let's Encrypt` (NOT `Gateway CA`). Any future app added on :443 needs
   its hostname added to a Do-Not-Inspect rule. Full context: design doc
   §5 amendment 2026-05-18 + `~/cloudflare-mesh-k3s-state.md`.
-- **PV reclaim policy = Retain** — the bound PVs for `nextcloud-data` and
-  `nextcloud-backups` were patched to `persistentVolumeReclaimPolicy: Retain`
-  (local-path defaults to `Delete`), so an accidental `kubectl delete pvc`
-  does not wipe the hostPath. Disk-loss recovery is still the nightly
-  acer-laptop rsync (design §4); these PVs are single-disk on asus.
+- **PV reclaim policy = Retain** — the bound PVs for all three claims
+  (`nextcloud-data`, `nextcloud-db`, `nextcloud-backups`) were patched to
+  `persistentVolumeReclaimPolicy: Retain` (local-path defaults to `Delete`), so
+  an accidental `kubectl delete pvc` does not wipe the hostPath. Disk-loss
+  recovery is still the nightly acer-laptop rsync (design §4); these PVs are
+  single-disk on asus.
