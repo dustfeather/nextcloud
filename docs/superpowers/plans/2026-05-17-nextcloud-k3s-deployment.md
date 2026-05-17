@@ -1156,11 +1156,40 @@ Upgrades: `helm upgrade nextcloud nextcloud/nextcloud -n nextcloud --version <v>
 
 Replace the `## Status` body with: `Deployed. Plan executed: docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md. Access https://nextcloud.itguys.ro (Mesh only).`
 
+- [ ] **Step 4b: Add an "Operational dependencies" section to `README.md`** (carry-forwards: Gateway Do-Not-Inspect + PV Retain). Append:
+
+```markdown
+## Operational dependencies (silent-failure if removed — read before touching Cloudflare/PVs)
+
+- **Cloudflare Gateway "Do Not Inspect" rule** — the `itguys` org has Gateway
+  `tls_decrypt` enabled, which TLS-MITMs `:443`. Rule id
+  `df440536-0b50-483d-b5d7-70cd7cbe6230` (`action: off`,
+  `http.conn.hostname == "nextcloud.itguys.ro"`) exempts this host so the real
+  Let's Encrypt cert is served end-to-end. **If this rule is deleted/disabled
+  the failure is silent**: clients get the Cloudflare Gateway CA, the Nextcloud
+  Android app breaks, and file traffic is decrypted at Cloudflare's edge.
+  Verify: `echo | openssl s_client -connect 100.96.0.2:443 -servername
+  nextcloud.itguys.ro 2>/dev/null | openssl x509 -noout -issuer` must show
+  `O = Let's Encrypt` (NOT `Gateway CA`). Any future app added on :443 needs
+  its hostname added to a Do-Not-Inspect rule. Full context: design doc
+  §5 amendment 2026-05-18 + `~/cloudflare-mesh-k3s-state.md`.
+- **PV reclaim policy = Retain** — the bound PVs for `nextcloud-data` and
+  `nextcloud-backups` were patched to `persistentVolumeReclaimPolicy: Retain`
+  (local-path defaults to `Delete`), so an accidental `kubectl delete pvc`
+  does not wipe the hostPath. Disk-loss recovery is still the nightly
+  acer-laptop rsync (design §4); these PVs are single-disk on asus.
+```
+
+- [ ] **Step 4c: Refresh the now-stale sub-`README.md`s** (they still say "None yet (design only)"):
+  - `helm/README.md`: state it now holds `cert-manager-values.yaml` + `nextcloud-values.yaml` (committed, secret-free).
+  - `manifests/README.md`: state it now holds `00-namespace`, `10-clusterissuer-letsencrypt`, `20-certificate`, `30-mariadb`, `40-valkey`, `50-nextcloud-pvcs`, `60-nginx-tls-proxy`, `70-backup-cronjob` (applied; apply order in root README).
+  - `secrets/README.md`: keep the policy text; update the closing line to note the `*.example` templates now exist and the real `*.yaml` are applied out-of-band & gitignored.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md
-git commit -m "docs(nextcloud): record apply order + deployed status"
+git add README.md helm/README.md manifests/README.md secrets/README.md
+git commit -m "docs(nextcloud): finalize README — apply order (:443), status, operational deps, sub-READMEs"
 ```
 
 ---
