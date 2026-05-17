@@ -795,8 +795,11 @@ data:
         proxy_request_buffering off;
 
         # CalDAV/CardDAV well-known redirects (Nextcloud security scan).
-        location = /.well-known/carddav { return 301 /remote.php/dav; }
-        location = /.well-known/caldav  { return 301 /remote.php/dav; }
+        # Use $http_host (client Host incl. the :30444 NodePort) — a relative
+        # 301 would drop the port (nginx listens on :443) and break DAVx5/
+        # Apple/Thunderbird autodiscovery against the non-standard external port.
+        location = /.well-known/carddav { return 301 https://$http_host/remote.php/dav; }
+        location = /.well-known/caldav  { return 301 https://$http_host/remote.php/dav; }
 
         location / {
           proxy_pass http://nextcloud:8080;
