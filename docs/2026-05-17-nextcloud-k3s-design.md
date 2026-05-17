@@ -1,7 +1,9 @@
 # Nextcloud on k3s — Design Spec
 
 Date: 2026-05-17
-Status: Approved (brainstorming) — pending user spec review → implementation plan
+Status: Approved; implementation plan written
+(`docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md`).
+Amended 2026-05-17 for remote-sudo automation (see §5).
 Cluster ref: `/home/dustfeather/cloudflare-mesh-k3s-state.md`
 
 ## 1. Goal & scope
@@ -93,6 +95,17 @@ the recovery path; there is intentionally no live storage replication.
    ClusterIssuer. Long-lived; never manually rotated for cert renewal.
 3. Create DNS `nextcloud.itguys.ro` A → `100.96.0.2` (DNS-only).
 4. User enrolls the Android phone in the WARP Mesh (companion step above).
+
+> **Amendment 2026-05-17 (remote sudo):** The operator has granted passwordless
+> remote `sudo` over Mesh SSH on **both** `asus-laptop` (`100.96.0.2`) and
+> `acer-laptop` (`100.96.0.4`). Consequence for this design: host-side prep for
+> the off-node backup target (create `~/backup/nextcloud/`, authorize the
+> dedicated backup SSH key on acer — §4 step 2) is **no longer a manual user
+> step**; the implementation plan automates it. The only items that remain
+> genuinely human/out-of-band are the ones that are *not* laptop shell actions:
+> the Cloudflare dashboard API token (#2), the DNS record (#3), and the Android
+> WARP enrolment (#4). The single-node pin (§2/§3) and versioned-imperative
+> apply model (footer) are deliberate choices, unaffected by host access.
 
 ## 6. Risks / accepted trade-offs
 
