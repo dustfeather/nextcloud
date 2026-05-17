@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: nextcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: valkey }
+  template:
+    metadata:
+      labels: { app: valkey }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: asus-laptop
+      containers:
+        - name: valkey
+          image: valkey/valkey:8-alpine
+          command:
+            - sh
+            - -c
+            - exec valkey-server --requirepass "$VALKEY_PASSWORD" --save "" --appendonly no --maxmemory 512mb --maxmemory-policy allkeys-lru
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom: { secretKeyRef: { name: valkey-auth, key: redis-password } }
+          ports:
+            - { name: valkey, containerPort: 6379 }
+          resources:
+            requests: { cpu: 25m, memory: 128Mi }
+            limits: { memory: 600Mi }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: nextcloud
+spec:
+  selector: { app: valkey }
+  ports:
+    - { name: valkey, port: 6379, targetPort: 6379 }
