@@ -11,9 +11,9 @@ Cluster operational runbook / source-of-truth: `~/cloudflare-mesh-k3s-state.md`.
 
 ```
 docs/        design spec(s)
-helm/        Helm values (committed, secret-free — placeholders only)
-manifests/   raw k8s YAML (namespace, NodePort svc, cert-manager issuer,
-             backup CronJob, etc.)
+helm/        Helm values (committed, secret-free): cert-manager + nextcloud
+manifests/   raw k8s YAML: namespace, cert-manager issuer + certificate,
+             MariaDB, Valkey, PVCs, nginx TLS proxy (hostPort :443), backup CronJob
 secrets/     templates ONLY (*.example). Real secrets are gitignored and
              applied out-of-band.
 ```
@@ -31,8 +31,11 @@ Workflow:
 
 Secrets this deployment needs (all out-of-band, never in git):
 - Cloudflare API token for cert-manager DNS-01 (`Zone:DNS:Edit` +
-  `Zone:Zone:Read` on `itguys.ro`).
-- Nextcloud admin password, MariaDB root/user passwords.
+  `Zone:Zone:Read` on `itguys.ro`) — `secrets/cf-api-token`.
+- Nextcloud admin password — `secrets/nextcloud-admin`.
+- MariaDB root + nextcloud DB passwords — `secrets/nextcloud-db`.
+- Valkey password — `secrets/valkey-auth`.
+- Dedicated backup SSH private key (rsync to acer) — `secrets/backup-ssh`.
 
 (If this grows, consider SOPS+age or Sealed Secrets — out of scope for now.)
 

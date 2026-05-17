@@ -9,12 +9,13 @@ homelab**. It is **not** an application codebase — there is no build/lint/test
 version-controlled declarative artifacts (Helm values, raw k8s YAML, secret templates)
 plus the design spec.
 
-**Current state: design-only.** As of the latest commit, `helm/`, `manifests/`, and
-`secrets/*.example` are empty placeholders — only their `README.md`s exist. The design
-is approved; the implementation plan has not been written and **no cluster changes have
-been made**. The next workflow step is writing the implementation plan (use the
-`superpowers:writing-plans` skill), which is what populates `helm/`, `manifests/`,
-`secrets/*.example`, and the "Apply order" in the root `README.md`.
+**Current state: deployed.** The implementation plan
+(`docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md`) has been written
+and executed; `helm/`, `manifests/`, and `secrets/*.example` are populated and the
+stack is live on the cluster (`https://nextcloud.itguys.ro`, Mesh-only, :443 via the
+proxy hostPort). The root `README.md` "Apply order" and "Operational dependencies"
+sections are the operator entry point; re-applying is manual (`helm upgrade` /
+`kubectl apply`) per the versioned-imperative model below.
 
 ## Operating model: versioned-imperative (no GitOps)
 
