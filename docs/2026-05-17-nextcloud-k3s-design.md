@@ -125,6 +125,21 @@ the recovery path; there is intentionally no live storage replication.
 > re-deciding this). No k3s reconfiguration or control-plane restart was
 > needed. Mesh-only, no public exposure, and all §7 acceptance criteria are
 > unchanged (they never specified a port).
+>
+> **Gateway TLS-inspection caveat (discovered during the :443 cutover):** the
+> `itguys` Zero Trust org has Cloudflare **Gateway `tls_decrypt` enabled
+> org-wide**. It inspects standard `:443` but *not* arbitrary high ports — so
+> the old NodePort `:30444` accidentally evaded it, while `:443` was being
+> TLS-MITM'd (clients saw the *Gateway CA*, not Let's Encrypt — breaks the
+> Nextcloud Android app and §7 "valid cert, no warnings", and means Cloudflare
+> decrypts private file traffic, contrary to the security model). **Required
+> out-of-band Cloudflare dependency:** a Gateway HTTP **Do Not Inspect** policy
+> (`action: off`, selector **`http.conn.hostname == "nextcloud.itguys.ro"`** —
+> the SNI field; the decrypted `http.request.host` is NOT valid for the `off`
+> action) so the real LE cert flows end-to-end on `:443`. Created via the
+> account-scoped CF API token (rule id `df440536-0b50-483d-b5d7-70cd7cbe6230`,
+> precedence 50). Any *future* app put on `:443` behind this proxy needs its
+> hostname added to (or a companion of) this Do-Not-Inspect rule.
 
 ## 6. Risks / accepted trade-offs
 
