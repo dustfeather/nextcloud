@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-tls-proxy
+  namespace: nextcloud
+data:
+  nginx.conf: |
+    worker_processes auto;
+    events { worker_connections 1024; }
+    http {
+      map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+      server {
+        listen 443 ssl;
+        http2 on;
+        server_name nextcloud.itguys.ro;
+
+        ssl_certificate     /tls/tls.crt;
+        ssl_certificate_key /tls/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+
+        client_max_body_size 10G;
+        client_body_timeout 300s;
+        proxy_read_timeout 3600s;
+        proxy_request_buffering off;
+
+        # CalDAV/CardDAV well-known redirects (Nextcloud security scan).
+        location = /.well-known/carddav { return 301 /remote.php/dav; }
+        location = /.well-known/caldav  { return 301 /remote.php/dav; }
+
+        location / {
+          proxy_pass http://nextcloud:8080;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Host  $http_host;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_set_header Upgrade           $http_upgrade;
+          proxy_set_header Connection        $connection_upgrade;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-tls-proxy
+  namespace: nextcloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nginx-tls-proxy }
+  template:
+    metadata:
+      labels: { app: nginx-tls-proxy }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: asus-laptop
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          # Wrapper: nginx as PID 1 (exec) + background watcher that runs
+          # `nginx -s reload` when cert-manager rotates nextcloud-tls in-place
+          # (~every 60d). Without this the pod serves the OLD cert until a
+          # restart, silently breaking design §3/§7 "auto-renew, no manual action".
+          command:
+            - /bin/sh
+            - -c
+            - |
+              LAST=$(sha256sum /tls/tls.crt 2>/dev/null | awk '{print $1}')
+              ( while true; do
+                  sleep 21600
+                  CUR=$(sha256sum /tls/tls.crt 2>/dev/null | awk '{print $1}')
+                  if [ -n "$CUR" ] && [ "$CUR" != "$LAST" ]; then
+                    echo "[cert-reload] nextcloud-tls changed, reloading nginx"
+                    nginx -s reload
+                    LAST="$CUR"
+                  fi
+                done ) &
+              exec nginx -g 'daemon off;'
+          ports:
+            - { name: https, containerPort: 443 }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+          readinessProbe:
+            tcpSocket: { port: 443 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+            - { name: tls,  mountPath: /tls, readOnly: true }
+      volumes:
+        - name: conf
+          configMap: { name: nginx-tls-proxy }
+        - name: tls
+          secret: { secretName: nextcloud-tls }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-https
+  namespace: nextcloud
+spec:
+  type: NodePort
+  selector: { app: nginx-tls-proxy }
+  ports:
+    - name: https
+      port: 443
+      targetPort: 443
+      nodePort: 30444
