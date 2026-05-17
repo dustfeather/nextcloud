@@ -959,9 +959,14 @@ ssh dustfeather@100.96.0.4 "install -d -m700 ~/.ssh && touch ~/.ssh/authorized_k
 ssh -i /tmp/nc-backup -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
   dustfeather@100.96.0.4 'echo acer-backup-ok; ls -ld ~/backup/nextcloud/data ~/backup/nextcloud/db'
 
-# 4. Build the gitignored secret from the private key and apply
-cp secrets/backup-ssh.example secrets/backup-ssh.yaml
-# paste contents of /tmp/nc-backup (private key) into secrets/backup-ssh.yaml (replace the REPLACE_ME block)
+# 4. Build the gitignored secret DETERMINISTICALLY from the keyfile (no manual
+#    paste, no REPLACE_ME failure mode). Key name id_ed25519 matches the CronJob.
+kubectl create secret generic backup-ssh -n nextcloud \
+  --from-file=id_ed25519=/tmp/nc-backup \
+  --dry-run=client -o yaml > secrets/backup-ssh.yaml
+# Guard (carry-forward, Task 1 review): never apply a placeholder/empty key.
+grep -q 'REPLACE_ME' secrets/backup-ssh.yaml && { echo "ERROR: placeholder in backup-ssh.yaml"; exit 1; } || true
+grep -q 'id_ed25519' secrets/backup-ssh.yaml || { echo "ERROR: id_ed25519 key missing"; exit 1; }
 kubectl apply -f secrets/backup-ssh.yaml
 kubectl -n nextcloud get cronjob nextcloud-backup
 ```
@@ -1042,7 +1047,17 @@ kubectl -n nextcloud create job --from=cronjob/nextcloud-backup nextcloud-backup
 kubectl -n nextcloud wait --for=condition=complete job/nextcloud-backup-manual --timeout=900s
 kubectl -n nextcloud logs job/nextcloud-backup-manual
 ```
-Expected: job completes; log ends with `[backup] done`. If rsync fails with a host-key/permission error, P4 is incomplete (pubkey not authorized on acer or `~/backup/nextcloud/` missing).
+Expected: job completes; log ends with `[backup] done`. If rsync fails with a host-key/permission error, Step 1's acer provisioning is incomplete (pubkey not authorized on acer or `~/backup/nextcloud/` missing).
+
+- [ ] **Step 3b: Protect the backups PV from accidental deletion (CARRY-FORWARD from Task 7 review — REQUIRED, not over-build)**
+
+The manual job mounted `nextcloud-backups`, so it is now Bound (local-path default reclaimPolicy is Delete):
+```bash
+PV=$(kubectl -n nextcloud get pvc nextcloud-backups -o jsonpath='{.spec.volumeName}')
+kubectl patch pv "$PV" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+kubectl get pv "$PV" -o jsonpath='{.metadata.name} {.spec.persistentVolumeReclaimPolicy}{"\n"}'
+```
+Expected: prints the PV name and `Retain`. (Operational cluster patch, no repo artifact; report it for Task 12's README note.)
 
 - [ ] **Step 4: Verify the restore artifacts exist locally AND on acer**
 
