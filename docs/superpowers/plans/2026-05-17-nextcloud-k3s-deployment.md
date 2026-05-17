@@ -828,6 +828,25 @@ spec:
       containers:
         - name: nginx
           image: nginx:1.27-alpine
+          # Wrapper: nginx as PID 1 (exec) + background watcher that runs
+          # `nginx -s reload` when cert-manager rotates nextcloud-tls in-place
+          # (~every 60d). Without this the pod serves the OLD cert until a
+          # restart, silently breaking design §3/§7 "auto-renew, no manual action".
+          command:
+            - /bin/sh
+            - -c
+            - |
+              LAST=$(sha256sum /tls/tls.crt 2>/dev/null | awk '{print $1}')
+              ( while true; do
+                  sleep 21600
+                  CUR=$(sha256sum /tls/tls.crt 2>/dev/null | awk '{print $1}')
+                  if [ -n "$CUR" ] && [ "$CUR" != "$LAST" ]; then
+                    echo "[cert-reload] nextcloud-tls changed, reloading nginx"
+                    nginx -s reload
+                    LAST="$CUR"
+                  fi
+                done ) &
+              exec nginx -g 'daemon off;'
           ports:
             - { name: https, containerPort: 443 }
           resources:
