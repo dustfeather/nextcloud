@@ -1,81 +1,33 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## What this repo is
+## Nature of this repo
 
-Deployment artifacts for **Nextcloud on an existing 3-node k3s-over-Cloudflare-WARP-Mesh
-homelab**. It is **not** an application codebase — there is no build/lint/test. It holds
-version-controlled declarative artifacts (Helm values, raw k8s YAML, secret templates)
-plus the design spec.
-
-**Current state: deployed.** The implementation plan
-(`docs/superpowers/plans/2026-05-17-nextcloud-k3s-deployment.md`) has been written
-and executed; `helm/`, `manifests/`, and `secrets/*.example` are populated and the
-stack is live on the cluster (`https://nextcloud.itguys.ro`, Mesh-only, :443 via the
-proxy hostPort). The root `README.md` "Apply order" and "Operational dependencies"
-sections are the operator entry point; re-applying is manual (`helm upgrade` /
-`kubectl apply`) per the versioned-imperative model below.
+- Deployment artifacts for Nextcloud on an existing 3-node k3s-over-Cloudflare-WARP-Mesh homelab. Not an application codebase: there is no build/lint/test.
+- State: deployed and live at `https://nextcloud.itguys.ro` (Mesh-only, :443 via proxy hostPort). `helm/`, `manifests/`, `secrets/*.example` are populated.
 
 ## Operating model: versioned-imperative (no GitOps)
 
-There is **no GitOps controller**. Nothing in this repo is auto-applied. Every
-declarative artifact is committed here, but changes reach the cluster only through
-**manual** `helm upgrade -f ...` / `kubectl apply -f ...` run out-of-band by the
-operator. When adding artifacts, also update the apply-order documentation in
-`README.md` — the repo is the record, the human is the deployer.
-
-Validate before proposing an apply (no cluster CI exists):
-- `helm template <release> <chart> -f helm/<values>.yaml` and `helm lint`
-- `kubectl apply --dry-run=server -f manifests/<file>.yaml`
+- No GitOps controller; nothing here is auto-applied. Changes reach the cluster only via manual `helm upgrade -f ...` / `kubectl apply -f ...` run out-of-band by the operator.
+- When adding an artifact, also update the apply-order docs in `README.md`. The repo is the record; the human is the deployer.
+- No cluster CI — validate before proposing an apply: `helm template <release> <chart> -f helm/<values>.yaml` + `helm lint`; `kubectl apply --dry-run=server -f manifests/<file>.yaml`.
 
 ## Source-of-truth files (read before any cluster-affecting work)
 
-- `docs/2026-05-17-nextcloud-k3s-design.md` — the full approved design spec
-  (architecture, storage sizes, access model, backup strategy, acceptance criteria).
-  Treat its decisions as settled unless the user reopens them.
-- `~/cloudflare-mesh-k3s-state.md` (**outside this repo**, in the user's home) — the
-  cluster operational runbook and source-of-truth for node names, Mesh IPs, existing
-  components (e.g. `degoog`, headlamp). Consult it for live cluster facts; this repo
-  intentionally does not duplicate it.
+- `docs/2026-05-17-nextcloud-k3s-design.md` — approved design spec. Treat its decisions as settled unless the user reopens them.
+- `~/cloudflare-mesh-k3s-state.md` (outside this repo, in user's home) — cluster runbook; source of truth for node names, Mesh IPs, existing components (`degoog`, headlamp). This repo intentionally does not duplicate it.
 
 ## Architecture invariants (don't violate without revisiting the design)
 
-- **Single-node pin.** The entire stack runs in namespace `nextcloud` with
-  `nodeSelector: kubernetes.io/hostname=asus-laptop` on every pod. Storage is
-  `local-path` (node-local RWO) on asus only. Nothing may schedule to `acer-laptop`
-  or `wsl`. No storage HA is by design (accepted trade-off).
-- **Mesh-only, no public exposure.** The asus-pinned nginx TLS proxy binds the
-  asus host `:443` via `hostPort` (single replica; its Service is ClusterIP),
-  so access is `https://nextcloud.itguys.ro` (default port, no NodePort), with
-  DNS `nextcloud.itguys.ro` → A `100.96.0.2` **DNS-only / grey-cloud**. The
-  cluster's cloudflared tunnel is deliberately **not** used here. There is no
-  ingress controller (traefik disabled); this proxy is the single shared :443
-  TLS entrypoint (future apps = added nginx SNI server blocks + their own cert).
-- **Components:** official `nextcloud/nextcloud` Helm chart (Apache image, plain
-  HTTP on Service :8080; the chart's nginx sidecar is **disabled** — TLS is
-  terminated by a **separate front nginx proxy** that binds host :443, plan
-  Deviation #1) + dedicated **MariaDB** (Postgres explicitly rejected) + dedicated
-  **Valkey** for `memcache.locking`/`memcache.distributed` (a fresh instance — do
-  not reuse `degoog`'s Valkey). TLS via **cert-manager** (ns `cert-manager`) with a
-  Cloudflare **DNS-01** ClusterIssuer, auto-renewed (the proxy self-reloads on
-  rotation).
-- **Backups ≠ replication.** Nightly asus-pinned CronJob: `mariadb-dump
-  --single-transaction` (no `occ`/maintenance-mode — plan Deviation #2) + a
-  `config.php` copy to a local PVC, then `rsync` data + dump to `acer-laptop` over
-  Mesh SSH. The acer copy is the real recovery path; the local PVC only covers
-  accidental deletion. There is intentionally no live storage replication.
+- Single-node pin: whole stack in namespace `nextcloud` with `nodeSelector: kubernetes.io/hostname=asus-laptop` on every pod. Storage is `local-path` (node-local RWO) on asus only. Nothing may schedule to `acer-laptop` or `wsl`. No storage HA — accepted trade-off.
+- Mesh-only, no public exposure: asus-pinned nginx TLS proxy binds asus host `:443` via `hostPort` (single replica; its Service is ClusterIP). DNS `nextcloud.itguys.ro` → A `100.96.0.2`, DNS-only / grey-cloud. The cluster cloudflared tunnel is deliberately not used. No ingress controller (traefik disabled) — this proxy is the single shared :443 TLS entrypoint; future apps = added nginx SNI server blocks + own cert.
+- Components: official `nextcloud/nextcloud` Helm chart (Apache image, plain HTTP on Service :8080; chart's nginx sidecar disabled — TLS terminated by the separate front nginx proxy, plan Deviation #1). Dedicated MariaDB (Postgres explicitly rejected). Dedicated Valkey for `memcache.locking`/`memcache.distributed` — a fresh instance, do not reuse `degoog`'s Valkey. TLS via cert-manager (ns `cert-manager`) with a Cloudflare DNS-01 ClusterIssuer, auto-renewed (proxy self-reloads on rotation).
+- Backups ≠ replication: nightly asus-pinned CronJob does `mariadb-dump --single-transaction` (no `occ`/maintenance-mode — plan Deviation #2) + a `config.php` copy to a local PVC, then `rsync` data + dump to `acer-laptop` over Mesh SSH. The acer copy is the real recovery path; the local PVC only covers accidental deletion. No live storage replication by design.
 
 ## Secrets policy (hard rule — this repo may go to GitHub)
 
-**Never commit plaintext secrets.** `.gitignore` permits only `README.md`,
-`*.example`, and `*.template` under `secrets/`, and globally excludes `*-secret.yaml`,
-`*.key`, `*.pem`, `kubeconfig*`, `.env*`, `*-token*`. Pattern: commit
-`secrets/<name>.example` (placeholders) → operator copies to `secrets/<name>.yaml`
-(gitignored, real values) → `kubectl apply` out-of-band. Secrets needed (5):
-scoped Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read` on `itguys.ro`;
-`cf-api-token`), Nextcloud admin password (`nextcloud-admin`), MariaDB root +
-nextcloud DB passwords (`nextcloud-db`), Valkey password (`valkey-auth`), and the
-dedicated backup SSH key (`backup-ssh`). Also an out-of-band Cloudflare Gateway
-"Do Not Inspect" rule for `nextcloud.itguys.ro` (see README "Operational
-dependencies" / design §5) — not a k8s secret but a required dependency.
+- Never commit plaintext secrets. `.gitignore` enforces this — do not loosen it.
+- Pattern: commit `secrets/<name>.example` (placeholders) → operator copies to `secrets/<name>.yaml` (gitignored, real values) → `kubectl apply` out-of-band.
+- Five secrets: scoped Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read` on `itguys.ro`; `cf-api-token`), Nextcloud admin password (`nextcloud-admin`), MariaDB root + nextcloud DB passwords (`nextcloud-db`), Valkey password (`valkey-auth`), backup SSH key (`backup-ssh`).
+- Non-k8s dependency: an out-of-band Cloudflare Gateway "Do Not Inspect" rule for `nextcloud.itguys.ro` is required (see README "Operational dependencies" / design §5).
