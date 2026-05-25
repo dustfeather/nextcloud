@@ -60,12 +60,12 @@ jobs:
     runs-on: arc-itguys-ro-nextcloud
     steps:
       - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
-      - name: Verify in-cluster auth
+      - name: Verify in-cluster auth (SelfSubjectAccessReview, no RBAC needed)
         run: |
           set -euo pipefail
-          kubectl auth whoami || kubectl get --raw='/api/v1/namespaces/nextcloud' >/dev/null
           kubectl auth can-i update secret/cloudflare-api-token -n cert-manager
           kubectl auth can-i create secret -n nextcloud
+          kubectl auth can-i create deployment.apps -n nextcloud
       - name: Render and apply Secret/cloudflare-api-token (cert-manager)
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
