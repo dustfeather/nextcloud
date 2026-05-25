@@ -40,7 +40,7 @@ jobs:
             --version "${HELM_CHART_VERSION}" \
             --namespace "${KUBE_NS}" \
             -f helm/nextcloud-values.yaml \
-            | kubectl apply --dry-run=server -f -
+            | kubectl apply -n "${KUBE_NS}" --dry-run=server -f -
 
       - name: kubectl --dry-run=server -f manifests (CI-scoped subset)
         run: |
